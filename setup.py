@@ -5,10 +5,10 @@ setup(
     #version="0.1.0",
     author="Zahra Mansouri",
     author_email="Zahra.mansouri@unige.ch",
-    description="DL models for CT-free attenuation and monte-carlo based scatter corrections for 90Y-SPECT images",
+    description="DL models for CT-free attenuation and monte-carlo based scatter corrections for 99mTc-MAA-SPECT images",
     long_description = open('README.md', encoding='utf-8').read(),
     long_description_content_type="text/markdown",
-    url="https://github.com/ZahraMansouriMedPhys/DL-90Y-SPECT-Correction",
+    url="https://github.com/ZahraMansouriMedPhys/DL-99mTc-MAA-SPECT-Correction",
     packages=find_packages(),
     py_modules=["DL_inference", "image_utils"],
     install_requires=[
