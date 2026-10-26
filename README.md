@@ -44,11 +44,26 @@ These models may be particularly beneficial in:
 
 ## 📥 Download Trained Models
 
-The trained model weights are available upon request through the following Google Drive folder:
+The three trained model weights are stored in [`models/`](models/) using Git LFS.
+Install [Git LFS](https://git-lfs.com/), then download the repository and weights:
+
+```bash
+git lfs install
+git clone https://github.com/ZahraMansouriMedPhys/DL-99mTc-MAA-SPECT-Correction.git
+cd DL-99mTc-MAA-SPECT-Correction
+git lfs pull
+```
+
+Each checkpoint is 70,412,185 bytes. SHA-256 checksums are recorded in
+[`models/SHA256SUMS`](models/SHA256SUMS). A small text file beginning with
+`version https://git-lfs.github.com/spec/v1` is an LFS pointer; run `git lfs pull`
+to download the actual weights.
+
+The original Google Drive location is:
 
 https://drive.google.com/drive/folders/1kBq7gA8YaatLOVIYUyv6eIHMwV7BhWGx?usp=drive_link
 
-Access is managed by the authors. Please request access through Google Drive and briefly indicate your institution and intended use.
+Access to the Google Drive copy is managed by the authors.
 
 Available models:
 
@@ -63,6 +78,23 @@ Available models:
 ```bash
 pip install git+https://github.com/ZahraMansouriMedPhys/DL-99mTc-MAA-SPECT-Correction.git
 ```
+
+This installs the Python modules and dependencies. Download the checkpoints
+separately using the Git LFS commands above; they are not included in the Python
+package.
+
+### Inference compatibility
+
+The published checkpoints contain Swin UNETR tensor weights (`state_dict`), not
+serialized model objects or preprocessing settings. The current
+`model_inference_regression` function expects a full training checkpoint with
+keys such as `model`, `test_transform`, and `params_to_torch_save`, so it cannot
+use these three files directly.
+
+Reproducing predictions requires the original model configuration and training
+preprocessing, including voxel spacing, orientation, and intensity scaling.
+These must be confirmed before an inference example can be validated. Weight
+availability and file integrity alone do not establish prediction accuracy.
 
 ---
 

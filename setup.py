@@ -11,6 +11,7 @@ setup(
     url="https://github.com/ZahraMansouriMedPhys/DL-99mTc-MAA-SPECT-Correction",
     packages=find_packages(),
     py_modules=["DL_inference", "image_utils"],
+    package_dir={"": "DL-MAA-Corrections"},
     install_requires=[
         "pandas",
         "tqdm",
@@ -23,6 +24,8 @@ setup(
         "natsort", 
         "monai", 
         "nibabel", 
+        "scipy",
+        "opencv-python-headless",
     ],
     classifiers=[
         "Programming Language :: Python :: 3",
