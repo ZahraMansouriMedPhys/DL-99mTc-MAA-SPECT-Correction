@@ -83,18 +83,35 @@ This installs the Python modules and dependencies. Download the checkpoints
 separately using the Git LFS commands above; they are not included in the Python
 package.
 
-### Inference compatibility
+### Inference
 
-The published checkpoints contain Swin UNETR tensor weights (`state_dict`), not
-serialized model objects or preprocessing settings. The current
-`model_inference_regression` function expects a full training checkpoint with
-keys such as `model`, `test_transform`, and `params_to_torch_save`, so it cannot
-use these three files directly.
+Use Python 3.10 or newer. The same `DL_inference.py` interface as the 90Y
+repository now loads the three MAA weight files:
 
-Reproducing predictions requires the original model configuration and training
-preprocessing, including voxel spacing, orientation, and intensity scaling.
-These must be confirmed before an inference example can be validated. Weight
-availability and file integrity alone do not establish prediction accuracy.
+```python
+from DL_inference import model_inference_regression
+
+result = model_inference_regression(
+    model_url="models/AC_Model.pth",  # or SC_Model.pth / ASC_Model.pth
+    list_images=["input.nii.gz"],
+    predict_directory="predictions",
+    device="cpu",  # or "auto" / "cuda"
+    suffix="_AC",
+)
+```
+
+AC and ASC take non-corrected SPECT; SC takes attenuation-corrected SPECT.
+Outputs retain the input image shape and spatial coordinates. Existing files
+are not overwritten.
+
+The weights do not contain training preprocessing. Defaults keep native spacing,
+orientation, and intensities, with raw network output. Optional `pixdim`,
+`orientation`, `input_range=(min,max)` (maps to `[0,1]`), and
+`output_range=(min,max)` (maps output `[0,1]` back to that range) let you specify
+the preparation explicitly. `normalize_features=True`, `downsample="merging"`,
+and 64-voxel sliding windows are runtime assumptions, not recovered training
+settings. All three models run on synthetic images; quantitative accuracy
+cannot be verified without the original preprocessing and reference images.
 
 ---
 

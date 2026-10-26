@@ -426,82 +426,116 @@ def ensemble_image_regression(list_inference_models, target_url = "none"):
     return image_ensemble
 
  
-def model_inference_regression(model_url, list_images = "from-model", predict_directory = "none", device = "cuda", prefix = "", suffix = "", cache_rate = 1, sliding_overlap = "from-model", samrt_num_workers = 8):
-   
-    if predict_directory != "none":
-        os.makedirs(predict_directory, exist_ok=True)
-    model_dictionary = torch.load(model_url)
-    if list_images == "from-model":
-        list_images = [x["input_image"] for x in model_dictionary["test_data_dictionary"]]
-    model = model_dictionary["model"]
-    validation_transforms = model_dictionary["validation_transform"]
-    test_transform =  model_dictionary["test_transform"]
-    train_transform = model_dictionary["train_transform"]
-    single_input_shape = model_dictionary["single_input_shape"]
-    sliding_window_shape = model_dictionary["sliding_window_shape"]
-    if sliding_overlap == "from-model":
-       sliding_overlap =  model_dictionary["sliding_windows_overlap"] # should be dded
-    post_transforms_test = model_dictionary["post_transforms_test"]
-    device = torch.device(device)
-    model.to(device)
-    params_to_torch_save = model_dictionary["params_to_torch_save"]
-    list_input, list_output = list_images, list_images
-    try:
-        data_loader_test = data_loader(list_images, list_images, transform=test_transform, data_split="test", batch_size=1, samrt_num_workers = samrt_num_workers)["data_loader"]
-    except:
-        data_loader_dict_test = data_loader(list_images, list_images,
-                                            pixdim = params_to_torch_save["pixdim"], transform="default", orientation = params_to_torch_save["orientation"],
-                                            input_lower_intensity = params_to_torch_save["input_lower_intensity"], input_upper_intensity= params_to_torch_save["input_upper_intensity"],
-                                            output_lower_intensity=params_to_torch_save["output_lower_intensity"], output_upper_intensity=params_to_torch_save["output_upper_intensity"],
-                                            output_b_min=params_to_torch_save["output_b_min"], output_b_max=params_to_torch_save["output_b_max"],
-                                            input_b_min=params_to_torch_save["input_b_min"], input_b_max=params_to_torch_save["input_b_max"], 
-                                            task = "regression", data_split="test",
-                                            clip = params_to_torch_save["clip"], batch_size = 1,
-                                            data_loader_type = params_to_torch_save["data_loader_type"],  cachedata = True,
-                                            cache_rate = cache_rate, samrt_num_workers = params_to_torch_save["samrt_num_workers"], 
-                                            data_loader_num_threads = params_to_torch_save["data_loader_num_threads"],
-                                            )
-        data_loader_test = data_loader_dict_test["data_loader"]
-        post_transforms_test = data_loader_dict_test["post_transform"]
-            
-    model.eval()
-    inference_output_url = []
-    for test_batch_data in tqdm(data_loader_test, desc = "external-inference", colour = "cyan"):
-        with torch.no_grad():
-            input_image = torch.squeeze(test_batch_data["input_image"], dim = -1).to(device)
-            
-            if len(sliding_window_shape) == 2:
-                axial_inferer = monai.inferers.SliceInferer(roi_size=sliding_window_shape,
-                                                            overlap =sliding_overlap,
-                                                            sw_batch_size=1,
-                                                            cval=-1, progress=False)
-                predicted_image = axial_inferer(input_image, model)
-            else:
-                predicted_image = monai.inferers.sliding_window_inference(input_image,
-                                                                        sliding_window_shape, 1,
-                                                                        model, overlap = sliding_overlap, progress=False)
-                
-            test_batch_data["predict_image"] = predicted_image
-            test_batch_data_prepared = [post_transforms_test(i) for i in monai.data.decollate_batch(test_batch_data)]
-            test_predicted_image, test_output_image = monai.handlers.utils.from_engine(["predict_image", "output_image"])(test_batch_data_prepared)
-            predicted_array = torch.squeeze(test_predicted_image[0]).cpu().detach().numpy()
-            test_image_url = test_batch_data["input_image_meta_dict"]["filename_or_obj"][0]
-            test_image_name = os.path.basename(test_image_url)
-            header = nib.load(test_image_url).header
-            affine = nib.load(test_image_url).affine
-            predicted_nifti = nib.Nifti1Image(predicted_array, affine = affine,header=header)
-            test_image_name_to_write = f'{prefix}{test_image_name.replace(".nii.gz","")}{suffix}.nii.gz'
-            nib.save(predicted_nifti, os.path.join(predict_directory, test_image_name_to_write))
-            inference_output_url.append(os.path.join(predict_directory, test_image_name_to_write))
-            FreeGPU(close = False, reset = False, gc_collect = False, torch_empty_cache = True)
+def model_inference_regression(model_url, list_images="from-model", predict_directory="none",
+                               device="auto", prefix="", suffix="", cache_rate=1,
+                               sliding_overlap=0.25, samrt_num_workers=8, *,
+                               pixdim=None, orientation="keep", input_range=None,
+                               output_range=None, sliding_window_shape=(64, 64, 64),
+                               normalize_features=True, downsample="merging"):
+    """Run AC_Model.pth, SC_Model.pth or ASC_Model.pth on 3D NIfTI images.
 
-    inference_results = {}
-    output_url = inference_output_url
-    inference_results["predict_image_to_write"] = predicted_nifti 
-    inference_results["test_batch_data"] = test_batch_data
-    inference_results["test_predicted_image"] = test_predicted_image[0]
-    inference_results["output_urls"] = output_url
-    return inference_results
+    Training preprocessing is absent from these state_dict files. By default,
+    keep native spacing/orientation and input intensities; outputs are raw
+    network values. input_range=(min,max) maps inputs to [0,1] with clipping;
+    output_range=(min,max) maps network output [0,1] back to those units.
+    normalize_features and downsample are MONAI defaults, not recovered settings.
+    cache_rate and samrt_num_workers remain for compatibility; files run serially.
+    """
+    from pathlib import Path
+    from monai.data import MetaTensor
+    from monai.transforms import Compose, LoadImaged, EnsureTyped, Orientationd, Spacingd, Invertd
+
+    if isinstance(list_images, (str, Path)):
+        if str(list_images) == "from-model":
+            raise ValueError("Pass list_images explicitly; the MAA weights contain no test images.")
+        list_images = [list_images]
+    list_images = list(list_images)
+    if not list_images or predict_directory == "none":
+        raise ValueError("Supply input images and predict_directory.")
+    roi = tuple(sliding_window_shape)
+    if len(roi) != 3 or any(type(n) is not int or n < 32 or n % 32 for n in roi) or np.prod(roi) <= 32**3:
+        raise ValueError("sliding_window_shape must use multiples of 32, e.g. (64,64,64), with more than 32**3 voxels.")
+    if sliding_overlap == "from-model":
+        sliding_overlap = 0.25
+    if not 0 <= sliding_overlap < 1:
+        raise ValueError("sliding_overlap must be in [0,1).")
+    for limits in (input_range, output_range):
+        if limits is not None and (len(limits) != 2 or not np.isfinite(limits).all() or limits[1] <= limits[0]):
+            raise ValueError("Intensity ranges must contain two finite increasing values.")
+    if pixdim is not None and (len(pixdim) != 3 or not np.isfinite(pixdim).all() or any(n <= 0 for n in pixdim)):
+        raise ValueError("pixdim must contain three positive finite voxel sizes in mm.")
+    if type(normalize_features) is not bool or downsample not in ("merging", "mergingv2"):
+        raise ValueError("Use a boolean normalize_features and downsample='merging' or 'mergingv2'.")
+    output_dir = Path(predict_directory)
+    sources = [Path(p) for p in list_images]
+    if any(not (p.name.endswith(".nii.gz") or p.suffix == ".nii") for p in sources):
+        raise ValueError("Input images must be .nii or .nii.gz files.")
+    names = [f"{prefix}{p.name.removesuffix('.gz').removesuffix('.nii')}{suffix}.nii.gz" for p in sources]
+    if any(Path(name).name != name for name in names):
+        raise ValueError("prefix and suffix cannot contain directory separators.")
+    destinations = [output_dir / name for name in names]
+    if len(set(p.resolve() for p in destinations)) != len(destinations):
+        raise ValueError("Input names produce duplicate output filenames.")
+    if any(p.exists() or p.resolve() in {s.resolve() for s in sources} for p in destinations):
+        raise FileExistsError("An output exists or would overwrite an input; choose another directory or suffix.")
+    with open(model_url, "rb") as stream:
+        if stream.read(64).startswith(b"version https://git-lfs.github.com/spec/v1"):
+            raise ValueError("The model is an LFS pointer. Run git lfs pull first.")
+    state = torch.load(model_url, map_location="cpu", weights_only=True)
+    # All three supplied checkpoints have this same architecture (159 tensors).
+    model = monai.networks.nets.SwinUNETR(
+        in_channels=1, out_channels=1, feature_size=24, spatial_dims=3,
+        depths=(2, 2, 2, 2), num_heads=(3, 6, 12, 24), patch_size=2,
+        window_size=7, norm_name="instance", normalize=normalize_features,
+        downsample=downsample, use_v2=False,
+    )
+    model.load_state_dict(state, strict=True)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu") if device == "auto" else torch.device(device)
+    if device.type == "cuda" and not torch.cuda.is_available():
+        raise ValueError("CUDA is unavailable; use device='cpu'.")
+    model.to(device).eval()
+    transforms = [LoadImaged("input_image", reader="NibabelReader", ensure_channel_first=True, mmap=False),
+                  EnsureTyped("input_image", dtype=torch.float32)]
+    if orientation != "keep":
+        transforms.append(Orientationd("input_image", axcodes=orientation, labels=(("L", "R"), ("P", "A"), ("I", "S"))))
+    if pixdim is not None:
+        transforms.append(Spacingd("input_image", pixdim=pixdim, mode="bilinear"))
+    transform = Compose(transforms)
+    inverse = Invertd("predict_image", transform=transform, orig_keys="input_image",
+                      nearest_interp=False, to_tensor=True, device="cpu")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    for source, destination in tqdm(list(zip(sources, destinations)), desc="MAA inference"):
+        original = nib.load(source, mmap=False)
+        if len(original.shape) != 3 or not np.isfinite(original.get_fdata(dtype=np.float32)).all():
+            raise ValueError(f"Expected a finite 3D NIfTI image: {source}")
+        batch = transform({"input_image": str(source)})
+        image = batch["input_image"].as_tensor().unsqueeze(0)
+        if input_range is not None:
+            image = ((image - input_range[0]) / (input_range[1] - input_range[0])).clamp(0, 1)
+        if not torch.isfinite(image).all():
+            raise ValueError(f"Preprocessing produced nonfinite values: {source}")
+        with torch.inference_mode():
+            prediction = monai.inferers.sliding_window_inference(
+                image, roi, 1, model, overlap=sliding_overlap, mode="gaussian",
+                sw_device=device, device="cpu",
+            )[0]
+        if output_range is not None:
+            prediction = prediction * (output_range[1] - output_range[0]) + output_range[0]
+        batch["predict_image"] = MetaTensor(prediction)
+        restored = inverse(batch)["predict_image"] if batch["input_image"].applied_operations else batch["predict_image"]
+        array = restored[0].cpu().numpy().astype(np.float32)
+        if array.shape != original.shape or not np.isfinite(array).all():
+            raise ValueError(f"Invalid output shape or nonfinite prediction: {source}")
+        header = original.header.copy()
+        header.set_data_dtype(np.float32)
+        header.set_slope_inter(1, 0)
+        predicted_nifti = nib.Nifti1Image(array, original.affine, header)
+        predicted_nifti.set_qform(*original.get_qform(coded=True))
+        predicted_nifti.set_sform(*original.get_sform(coded=True))
+        nib.save(predicted_nifti, destination)
+    return {"predict_image_to_write": predicted_nifti, "test_batch_data": batch,
+            "test_predicted_image": restored, "output_urls": [str(p) for p in destinations]}
+
 
 def FreeGPU(gc_collect = True, torch_empty_cache = True):
     if gc_collect:
@@ -617,7 +651,7 @@ def ensemble_regression_folds(list_images,
                                              suffix = f"_{fold}_{model_name_to_suffix}",
                                              sliding_overlap = sliding_overlap,
                                              )
-        FreeGPU(close = False, reset = False, gc_collect = False, torch_empty_cache = True)
+        FreeGPU(gc_collect = False, torch_empty_cache = True)
     model_names_to_ensemble = list(set(model_names_to_ensemble))
     for model_name_to_ensemble in tqdm(model_names_to_ensemble, desc = "Ensembling Folds", colour = "cyan"):
         list_ensembled_images = []
